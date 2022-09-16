@@ -306,10 +306,152 @@ synchronized 使用的锁对象是存储在 Java 对象头里的，那么 Java �
 
 ### ReentrantLock
 
+ReentrantLock底层使用了CAS+AQS队列实现。
+
+AQS使用一个FIFO的队列（也叫CLH队列，是[CLH锁](https://link.zhihu.com/?target=https%3A//blog.csdn.net/claram/article/details/83828768)的一种变形），表示排队**等待锁的线程**。队列**头节点**称作“哨兵节点”或者“哑节点”，它不与任何线程关联。**其他的节点**与等待线程关联，每个节点维护一个等待状态waitStatus。结构如下图所示：
+
+![image-20220916172719895](D:/project/Interview/%E8%AF%AD%E8%A8%80/image/Java/image-20220916172719895.png)
+
+流程：
+
+1. ReentrantLock先通过CAS尝试获取锁，
+
+2. 1. 如果此时锁已经被占用，该线程加入AQS队列并wait()
+
+   2. 当前驱线程的锁被释放，挂在CLH队列为首的线程就会被notify()，然后继续CAS尝试获取锁，此时：
+
+   3. 1. 非公平锁，如果有其他线程尝试lock()，有可能被其他刚好申请锁的线程**抢占**。
+      2. 公平锁，只有在CLH**队列头的线程**才可以获取锁，**新来的线程**只能插入到队尾。
+
+#### lock() 和 unlock() 的实现
+
+##### lock()函数
+
+如果成功通过CAS修改了state，指定当前线程为该锁的独占线程，标志自己成功获取锁。
+
+如果CAS失败的话，调用acquire();
+
+```java
+final void lock() { //非公平锁
+    if (compareAndSetState(0, 1))
+        setExclusiveOwnerThread(Thread.currentThread());
+    else
+        acquire(1);
+}
+
+final void lock() { //公平锁
+    acquire(1);
+}
+```
+
 
 
 ## 实现多线程
 
+1. 继承Thread类，重写run()方法
+2. 实现Runnable接口，重写run()
+3. 带返回值的线程(实现implements  Callable<返回值类型>)
+
 
 
 ## 线程池
+
+`Executor` 框架是 Java5 之后引进的，在 Java 5 之后，通过 `Executor` 来启动线程比使用 `Thread` 的 `start` 方法更好，除了更易管理，效率更好（用线程池实现，节约开销）外，还有关键的一点：有助于避免 this 逃逸问题。
+
+> 补充：this 逃逸是指在构造函数返回之前其他线程就持有该对象的引用. 调用尚未构造完全的对象的方法可能引发令人疑惑的错误。
+
+`Executor` 框架不仅包括了线程池的管理，还提供了线程工厂、队列以及拒绝策略等，`Executor` 框架让并发编程变得更加简单。
+
+### 组成成分
+
+#### 任务(`Runnable` /`Callable`)
+
+执行任务需要实现的 **`Runnable` 接口** 或 **`Callable`接口**。**`Runnable` 接口**或 **`Callable` 接口** 实现类都可以被 **`ThreadPoolExecutor`** 或 **`ScheduledThreadPoolExecutor`** 执行。
+
+#### 任务的执行(`Executor`)
+
+如下图所示，包括任务执行机制的核心接口 **`Executor`** ，以及继承自 `Executor` 接口的 **`ExecutorService` 接口。`ThreadPoolExecutor`** 和 **`ScheduledThreadPoolExecutor`** 这两个关键类实现了 **ExecutorService 接口**。
+
+**这里提了很多底层的类关系，但是，实际上我们需要更多关注的是 `ThreadPoolExecutor` 这个类，这个类在我们实际使用线程池的过程中，使用频率还是非常高的。**
+
+> **注意：** 通过查看 `ScheduledThreadPoolExecutor` 源代码我们发现 `ScheduledThreadPoolExecutor` 实际上是继承了 `ThreadPoolExecutor` 并实现了 ScheduledExecutorService ，而 `ScheduledExecutorService` 又实现了 `ExecutorService`，正如我们下面给出的类关系图显示的一样。
+
+**`ThreadPoolExecutor` 类描述:**
+
+```java
+//AbstractExecutorService实现了ExecutorService接口
+public class ThreadPoolExecutor extends AbstractExecutorService
+```
+
+**`ScheduledThreadPoolExecutor` 类描述:**
+
+```java
+//ScheduledExecutorService继承ExecutorService接口
+public class ScheduledThreadPoolExecutor
+        extends ThreadPoolExecutor
+        implements ScheduledExecutorService
+```
+
+![任务的执行相关接口](D:/project/Interview/%E8%AF%AD%E8%A8%80/image/Java/%E4%BB%BB%E5%8A%A1%E7%9A%84%E6%89%A7%E8%A1%8C%E7%9B%B8%E5%85%B3%E6%8E%A5%E5%8F%A3.27457eb8.png)
+
+#### 异步计算的结果(`Future`)
+
+**`Future`** 接口以及 `Future` 接口的实现类 **`FutureTask`** 类都可以代表异步计算的结果。
+
+当我们把 **`Runnable`接口** 或 **`Callable` 接口** 的实现类提交给 **`ThreadPoolExecutor`** 或 **`ScheduledThreadPoolExecutor`** 执行。（调用 `submit()` 方法时会返回一个 **`FutureTask`** 对象）
+
+
+
+#### ThreadPoolExecutor 类分析
+
+```java
+    /**
+     * 用给定的初始参数创建一个新的ThreadPoolExecutor。
+     */
+    public ThreadPoolExecutor(int corePoolSize,//线程池的核心线程数量
+                              int maximumPoolSize,//线程池的最大线程数
+                              long keepAliveTime,//当线程数大于核心线程数时，多余的空闲线程存活的最长时间
+                              TimeUnit unit,//时间单位
+                              BlockingQueue<Runnable> workQueue,//任务队列，用来储存等待执行任务的队列
+                              ThreadFactory threadFactory,//线程工厂，用来创建线程，一般默认即可
+                              RejectedExecutionHandler handler//拒绝策略，当提交的任务过多而不能及时处理时，我们可以定制策略来处理任务
+                               ) {
+        if (corePoolSize < 0 ||
+            maximumPoolSize <= 0 ||
+            maximumPoolSize < corePoolSize ||
+            keepAliveTime < 0)
+            throw new IllegalArgumentException();
+        if (workQueue == null || threadFactory == null || handler == null)
+            throw new NullPointerException();
+        this.corePoolSize = corePoolSize;
+        this.maximumPoolSize = maximumPoolSize;
+        this.workQueue = workQueue;
+        this.keepAliveTime = unit.toNanos(keepAliveTime);
+        this.threadFactory = threadFactory;
+        this.handler = handler;
+    }
+```
+
+- **`corePoolSize` :** 核心线程数线程数定义了最小可以同时运行的线程数量。
+- **`maximumPoolSize` :** 当队列中存放的任务达到队列容量的时候，当前可以同时运行的线程数量变为最大线程数。
+- **`workQueue`:** 当新任务来的时候会先判断当前运行的线程数量是否达到核心线程数，如果达到的话，新任务就会被存放在队列中。
+
+其余参数：
+
+1. **`keepAliveTime`**:当线程池中的线程数量大于 `corePoolSize` 的时候，如果这时没有新的任务提交，核心线程外的线程不会立即销毁，而是会等待，直到等待的时间超过了 `keepAliveTime`才会被回收销毁；
+2. **`unit`** : `keepAliveTime` 参数的时间单位。
+3. **`threadFactory`** :executor 创建新线程的时候会用到。
+4. **`handler`** :饱和策略。关于饱和策略下面单独介绍一下。
+
+
+
+#### 饱和策略
+
+**`ThreadPoolExecutor` 饱和策略定义:**
+
+如果当前同时运行的线程数量达到最大线程数量并且队列也已经被放满了任务时，`ThreadPoolTaskExecutor` 定义一些策略:
+
+- **`ThreadPoolExecutor.AbortPolicy`** ：抛出 `RejectedExecutionException`来拒绝新任务的处理。
+- **`ThreadPoolExecutor.CallerRunsPolicy`** ：调用执行自己的线程运行任务，也就是直接在调用`execute`方法的线程中运行(`run`)被拒绝的任务，如果执行程序已关闭，则会丢弃该任务。因此这种策略会降低对于新任务提交速度，影响程序的整体性能。如果您的应用程序可以承受此延迟并且你要求任何一个任务请求都要被执行的话，你可以选择这个策略。
+- **`ThreadPoolExecutor.DiscardPolicy`** ：不处理新任务，直接丢弃掉。
+- **`ThreadPoolExecutor.DiscardOldestPolicy`** ： 此策略将丢弃最早的未处理的任务请求。
